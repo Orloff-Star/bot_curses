@@ -31,6 +31,55 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 
+async def send_media_message(chat_id: int, message_data: dict):
+    """Универсальная функция отправки сообщения с медиа или без"""
+    try:
+        # Создаем клавиатуру если есть кнопка
+        keyboard = None
+        if message_data.get('button_text') and message_data.get('button_url'):
+            builder = InlineKeyboardBuilder()
+            builder.button(
+                text=message_data['button_text'],
+                url=message_data['button_url']
+            )
+            keyboard = builder.as_markup()
+
+        # Отправляем сообщение в зависимости от типа медиа
+        media_type = message_data.get('media_type')
+        media_url = message_data.get('media_url')
+
+        if media_type == 'photo' and media_url:
+            await bot.send_photo(
+                chat_id=chat_id,
+                photo=media_url,
+                caption=message_data['text'],
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+        elif media_type == 'video' and media_url:
+            await bot.send_video(
+                chat_id=chat_id,
+                video=media_url,
+                caption=message_data['text'],
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            # Просто текстовое сообщение
+            await bot.send_message(
+                chat_id=chat_id,
+                text=message_data['text'],
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки медиа сообщения: {e}")
+        return False
+
+
 async def send_scheduled_welcome():
     """Отправка запланированных приветственных сообщений"""
     try:
@@ -43,76 +92,19 @@ async def send_scheduled_welcome():
             if message_stage < len(db.WELCOME_MESSAGES):
                 msg_data = db.WELCOME_MESSAGES[message_stage]
 
-                # Создаем клавиатуру с кнопкой если есть
-                keyboard = None
-                if msg_data.get('button_text') and msg_data.get('button_url'):
-                    builder = InlineKeyboardBuilder()
-                    builder.button(
-                        text=msg_data['button_text'],
-                        url=msg_data['button_url']
-                    )
-                    keyboard = builder.as_markup()
+                # Отправляем сообщение
+                success = await send_media_message(user_id, msg_data)
 
-                try:
-                    # Отправляем сообщение
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text=msg_data['text'],
-                        reply_markup=keyboard,
-                        parse_mode=ParseMode.HTML
-                    )
-
+                if success:
                     # Отмечаем сообщение как отправленное
                     await db.mark_message_sent(message_id)
                     await db.update_welcome_stage(user_id, message_stage)
-
                     logger.info(f"✅ Отправлено сообщение {message_stage} пользователю {user_id}")
-
-                except Exception as e:
-                    logger.error(f"❌ Ошибка отправки пользователю {user_id}: {e}")
+                else:
+                    logger.error(f"❌ Не удалось отправить сообщение {message_stage} пользователю {user_id}")
 
     except Exception as e:
         logger.error(f"❌ Ошибка в send_scheduled_welcome: {e}")
-
-
-async def manual_mailing():
-    """Функция для ручной рассылки всем подписчикам"""
-    subscribers = await db.get_all_subscribers()
-
-    # Пример сообщения для рассылки
-    text = """🔥 <b>Новый курс по Machine Learning!</b>
-
-Освойте одну из самых востребованных профессий!
-
-🎯 Что вы получите:
-• Практические навыки ML
-• Реальные проекты в портфолио
-• Поддержку ментора
-• Сертификат о завершении
-
-Не упустите шанс стать специалистом в области ИИ!"""
-
-    # Создаем кнопку
-    builder = InlineKeyboardBuilder()
-    builder.button(text="Записаться на курс", url="https://example.com/ml-course")
-    keyboard = builder.as_markup()
-
-    success_count = 0
-    for user_id in subscribers:
-        try:
-            await bot.send_message(
-                chat_id=user_id,
-                text=text,
-                reply_markup=keyboard,
-                parse_mode=ParseMode.HTML
-            )
-            success_count += 1
-            logger.info(f"✅ Рассылка отправлена пользователю {user_id}")
-        except Exception as e:
-            logger.error(f"❌ Ошибка отправки пользователю {user_id}: {e}")
-
-    logger.info(f"📨 Рассылка завершена. Успешно отправлено: {success_count}/{len(subscribers)}")
-    return success_count
 
 
 @dp.message(CommandStart())
@@ -127,7 +119,7 @@ async def cmd_start(message: types.Message):
 
         # Отправляем первое сообщение сразу
         first_message = db.WELCOME_MESSAGES[0]
-        await message.answer(first_message["text"])
+        await send_media_message(user.id, first_message)
 
         # Планируем остальные сообщения
         scheduled_count = 0
@@ -152,8 +144,7 @@ async def cmd_help(message: types.Message):
         "<b>Команды:</b>\n"
         "/start - подписаться на рассылку\n"
         "/help - эта справка\n"
-        "/stats - статистика бота\n"
-        "/mailing - сделать рассылку (только для администратора)\n\n"
+        "/stats - статистика бота\n\n"
         "После подписки вы получите серию сообщений с курсами!"
     )
     await message.answer(help_text, parse_mode=ParseMode.HTML)
@@ -177,21 +168,6 @@ async def cmd_stats(message: types.Message):
     except Exception as e:
         logger.error(f"Ошибка получения статистики: {e}")
         await message.answer("❌ Ошибка получения статистики")
-
-
-@dp.message(Command("mailing"))
-async def cmd_mailing(message: types.Message):
-    """Ручная рассылка (только для администратора)"""
-    # Можно добавить проверку на администратора по user_id
-    ADMIN_IDS = [1231038897]  # Замените на ваш user_id
-
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("❌ У вас нет прав для этой команды")
-        return
-
-    await message.answer("🔄 Начинаю рассылку...")
-    success_count = await manual_mailing()
-    await message.answer(f"✅ Рассылка завершена! Отправлено: {success_count}")
 
 
 @dp.message()
@@ -248,7 +224,8 @@ if __name__ == "__main__":
     print("/start - подписаться на рассылку")
     print("/help - справка по боту")
     print("/stats - статистика бота")
-    print("/mailing - рассылка (для администратора)")
+    print("=" * 50)
+    print("💡 Для ручной рассылки запустите: python manual_mailing.py")
     print("=" * 50)
 
     asyncio.run(main())

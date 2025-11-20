@@ -3,27 +3,35 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Схема приветственных сообщений
+# Обновленная схема сообщений с поддержкой медиа
 WELCOME_MESSAGES = [
     {
         "delay_minutes": 0,
         "text": "👋 Добро пожаловать в IT Courses Bot!\n\nЯ буду присылать вам лучшие курсы по программированию и ИИ. Оставайтесь на связи! 🚀",
+        "media_type": None,
+        "media_url": None,
     },
     {
-        "delay_minutes": 1,  # Через 1 минуту для теста
+        "delay_minutes": 1,
         "text": "📚 Первая рекомендация!\n\nКурс 'Python для начинающих' - идеальный старт в программировании.\nОсвойте основы за 2 недели!",
+        "media_type": "photo",
+        "media_url": "https://picsum.photos/400/300?random=1",
         "button_text": "Посмотреть курс",
         "button_url": "https://example.com/python-course"
     },
     {
-        "delay_minutes": 2,  # Через 2 минуты для теста
+        "delay_minutes": 2,
         "text": "🤖 Вторая рекомендация!\n\nКурс 'Машинное обучение на Python' - станьте специалистом в ИИ!\nПрактические проекты и поддержка ментора.",
+        "media_type": "photo",
+        "media_url": "https://picsum.photos/400/300?random=2",
         "button_text": "Узнать подробнее",
         "button_url": "https://example.com/ml-course"
     },
     {
-        "delay_minutes": 5,  # Через 5 минут для теста
+        "delay_minutes": 5,
         "text": "🚀 Специальное предложение!\n\nПолучите скидку 20% на все наши курсы по промокоду WELCOME20!\nНе упустите шанс начать карьеру в IT!",
+        "media_type": "photo",
+        "media_url": "https://picsum.photos/400/300?random=3",
         "button_text": "Получить скидку",
         "button_url": "https://example.com/special-offer"
     }
@@ -33,7 +41,6 @@ WELCOME_MESSAGES = [
 async def create_tables():
     """Создание таблиц базы данных"""
     async with aiosqlite.connect('bot_database.db') as db:
-        # Таблица подписчиков
         await db.execute('''
             CREATE TABLE IF NOT EXISTS subscribers (
                 user_id INTEGER PRIMARY KEY,
@@ -44,7 +51,6 @@ async def create_tables():
             )
         ''')
 
-        # Таблица запланированных сообщений
         await db.execute('''
             CREATE TABLE IF NOT EXISTS scheduled_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,7 +89,6 @@ async def add_scheduled_message(user_id: int, message_stage: int, delay_minutes:
             (user_id, message_stage, f"+{delay_minutes} minutes")
         )
         await db.commit()
-    logger.debug(f"Запланировано сообщение для {user_id}, стадия {message_stage}")
 
 
 async def get_pending_messages():
