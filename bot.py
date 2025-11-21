@@ -1,11 +1,11 @@
 import os
 import asyncio
 import logging
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.enums import ParseMode
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -27,8 +27,16 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден в .env файле")
 
+# ID администратора (замените на ваш user_id)
+ADMIN_IDS = [1231038897]  # Замените на ваш user_id
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+
+
+def is_admin(user_id: int) -> bool:
+    """Проверка, является ли пользователь администратором"""
+    return user_id in ADMIN_IDS
 
 
 async def send_media_message(chat_id: int, message_data: dict):
@@ -109,15 +117,61 @@ async def send_scheduled_welcome():
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
-    """Обработчик команды /start"""
-    try:
-        user = message.from_user
-        logger.info(f"🎯 /start от {user.id} ({user.first_name})")
+    """Обработчик команды /start - показывает кнопку подписки"""
+    user = message.from_user
 
+    # Проверяем, является ли пользователь администратором
+    if is_admin(user.id):
+        # Показываем администратору панель управления
+        admin_keyboard = ReplyKeyboardBuilder()
+        admin_keyboard.button(text="📊 Статистика")
+        admin_keyboard.button(text="📨 Сделать рассылку")
+        admin_keyboard.button(text="💬 Просмотреть комментарии")
+        admin_keyboard.adjust(2)
+
+        await message.answer(
+            "👋 Добро пожаловать в панель администратора!",
+            reply_markup=admin_keyboard.as_markup(resize_keyboard=True)
+        )
+        return
+
+    # Для обычных пользователей показываем кнопку подписки
+    is_subscribed = await db.is_user_subscribed(user.id)
+
+    if is_subscribed:
+        # Если уже подписан, показываем информацию
+        welcome_keyboard = ReplyKeyboardBuilder()
+        welcome_keyboard.button(text="💬 Оставить комментарий")
+        welcome_keyboard.button(text="📞 Связаться с поддержкой")
+
+        await message.answer(
+            "✅ Вы уже подписаны на рассылку!\n\n"
+            "Вы будете получать уведомления о новых курсах автоматически.",
+            reply_markup=welcome_keyboard.as_markup(resize_keyboard=True)
+        )
+    else:
+        # Если не подписан, показываем кнопку подписки
+        subscribe_keyboard = ReplyKeyboardBuilder()
+        subscribe_keyboard.button(text="✅ Подписаться на рассылку")
+
+        await message.answer(
+            "👋 Добро пожаловать в IT Courses Bot!\n\n"
+            "Подпишитесь на рассылку, чтобы получать лучшие курсы "
+            "по программированию и искусственному интеллекту.",
+            reply_markup=subscribe_keyboard.as_markup(resize_keyboard=True)
+        )
+
+
+@dp.message(F.text == "✅ Подписаться на рассылку")
+async def subscribe_user(message: types.Message):
+    """Обработчик подписки на рассылку"""
+    user = message.from_user
+
+    try:
         # Добавляем пользователя в базу
         await db.add_subscriber(user.id, user.username or "No username", user.first_name or "No name")
 
-        # Отправляем первое сообщение сразу
+        # Отправляем первое приветственное сообщение сразу
         first_message = db.WELCOME_MESSAGES[0]
         await send_media_message(user.id, first_message)
 
@@ -127,40 +181,73 @@ async def cmd_start(message: types.Message):
             await db.add_scheduled_message(user.id, i, msg_data["delay_minutes"])
             scheduled_count += 1
 
-        await message.answer("✅ Вы успешно подписались! Ожидайте новые курсы 📚")
-        logger.info(f"⏰ Запланировано {scheduled_count} сообщений для {user.id}")
+        # Меняем клавиатуру после подписки
+        welcome_keyboard = ReplyKeyboardBuilder()
+        welcome_keyboard.button(text="💬 Оставить комментарий")
+        welcome_keyboard.button(text="📞 Связаться с поддержкой")
+
+        await message.answer(
+            "🎉 Отлично! Вы успешно подписались на рассылку!\n\n"
+            "В ближайшее время вы получите подборки лучших IT-курсов. "
+            "Оставайтесь на связи! 📚",
+            reply_markup=welcome_keyboard.as_markup(resize_keyboard=True)
+        )
+
+        logger.info(f"✅ Пользователь {user.id} подписался на рассылку")
 
     except Exception as e:
-        logger.error(f"❌ Ошибка в /start: {e}")
-        await message.answer("❌ Произошла ошибка. Попробуйте позже.")
+        logger.error(f"❌ Ошибка при подписке пользователя {user.id}: {e}")
+        await message.answer("❌ Произошла ошибка при подписке. Попробуйте позже.")
 
 
-@dp.message(Command("help"))
-async def cmd_help(message: types.Message):
-    """Обработчик команды /help"""
-    help_text = (
-        "🤖 <b>IT Courses Bot - Помощь</b>\n\n"
-        "Я присылаю лучшие курсы по программированию и ИИ.\n\n"
-        "<b>Команды:</b>\n"
-        "/start - подписаться на рассылку\n"
-        "/help - эта справка\n"
-        "/stats - статистика бота\n\n"
-        "После подписки вы получите серию сообщений с курсами!"
+@dp.message(F.text == "💬 Оставить комментарий")
+async def start_comment(message: types.Message):
+    """Начало процесса комментирования"""
+    user = message.from_user
+
+    # Проверяем, подписан ли пользователь
+    is_subscribed = await db.is_user_subscribed(user.id)
+
+    if not is_subscribed:
+        await message.answer("❌ Чтобы оставить комментарий, необходимо сначала подписаться на рассылку.")
+        return
+
+    await message.answer(
+        "💬 Напишите ваш комментарий или отзыв:\n\n"
+        "Мы ценим ваше мнение и учитываем все пожелания!"
     )
-    await message.answer(help_text, parse_mode=ParseMode.HTML)
 
 
-@dp.message(Command("stats"))
-async def cmd_stats(message: types.Message):
-    """Показать статистику бота"""
+@dp.message(F.text == "📞 Связаться с поддержкой")
+async def contact_support(message: types.Message):
+    """Связь с поддержкой"""
+    await message.answer(
+        "📞 Связь с поддержкой:\n\n"
+        "Если у вас возникли вопросы или проблемы, "
+        "напишите нам на email: support@example.com\n\n"
+        "Мы ответим в ближайшее время! ⏰"
+    )
+
+
+@dp.message(F.text == "📊 Статистика")
+async def show_stats(message: types.Message):
+    """Показать статистику (только для администратора)"""
+    user = message.from_user
+
+    if not is_admin(user.id):
+        await message.answer("❌ У вас нет доступа к этой команде.")
+        return
+
     try:
         subscribers = await db.get_all_subscribers()
-        pending_messages = await db.get_pending_messages()
+        all_users = await db.get_all_users()
+        comments = await db.get_all_comments()
 
         stats_text = (
             f"📊 <b>Статистика бота</b>\n\n"
-            f"👥 Подписчиков: {len(subscribers)}\n"
-            f"📨 Ожидающих сообщений: {len(pending_messages)}\n"
+            f"👥 Активных подписчиков: {len(subscribers)}\n"
+            f"👤 Всего пользователей: {len(all_users)}\n"
+            f"💬 Комментариев: {len(comments)}\n"
             f"🕒 Сообщений в расписании: {len(db.WELCOME_MESSAGES)}"
         )
         await message.answer(stats_text, parse_mode=ParseMode.HTML)
@@ -170,10 +257,103 @@ async def cmd_stats(message: types.Message):
         await message.answer("❌ Ошибка получения статистики")
 
 
-@dp.message()
-async def handle_other_messages(message: types.Message):
-    """Обработчик всех остальных сообщений"""
-    await message.answer("Используйте /start для подписки или /help для справки")
+@dp.message(F.text == "📨 Сделать рассылку")
+async def start_mailing(message: types.Message):
+    """Запуск ручной рассылки (только для администратора)"""
+    user = message.from_user
+
+    if not is_admin(user.id):
+        await message.answer("❌ У вас нет доступа к этой команде.")
+        return
+
+    await message.answer(
+        "📨 Для запуска рассылки выполните команду:\n\n"
+        "<code>python manual_mailing.py</code>\n\n"
+        "в отдельном окне терминала.",
+        parse_mode=ParseMode.HTML
+    )
+
+
+@dp.message(F.text == "💬 Просмотреть комментарии")
+async def show_comments(message: types.Message):
+    """Просмотр комментариев (только для администратора)"""
+    user = message.from_user
+
+    if not is_admin(user.id):
+        await message.answer("❌ У вас нет доступа к этой команде.")
+        return
+
+    try:
+        comments = await db.get_all_comments()
+
+        if not comments:
+            await message.answer("📝 Комментариев пока нет.")
+            return
+
+        # Показываем последние 5 комментариев
+        comments_text = "💬 <b>Последние комментарии:</b>\n\n"
+        for i, comment in enumerate(comments[:5], 1):
+            id, user_id, username, first_name, message_text, created_at = comment
+            comments_text += (
+                f"{i}. <b>{first_name}</b> (@{username})\n"
+                f"   📝 {message_text}\n"
+                f"   ⏰ {created_at}\n\n"
+            )
+
+        if len(comments) > 5:
+            comments_text += f"... и еще {len(comments) - 5} комментариев"
+
+        await message.answer(comments_text, parse_mode=ParseMode.HTML)
+
+    except Exception as e:
+        logger.error(f"Ошибка получения комментариев: {e}")
+        await message.answer("❌ Ошибка получения комментариев")
+
+
+# Обработчик всех текстовых сообщений (для комментариев)
+@dp.message(F.text)
+async def handle_user_message(message: types.Message):
+    """Обработчик всех текстовых сообщений от пользователей"""
+    user = message.from_user
+
+    # Проверяем, является ли пользователь администратором
+    if is_admin(user.id):
+        # Администраторы могут использовать команды через клавиатуру
+        # Их сообщения не сохраняются как комментарии
+        return
+
+    # Проверяем, подписан ли пользователь
+    is_subscribed = await db.is_user_subscribed(user.id)
+
+    if not is_subscribed:
+        # Если не подписан, показываем кнопку подписки
+        subscribe_keyboard = ReplyKeyboardBuilder()
+        subscribe_keyboard.button(text="✅ Подписаться на рассылку")
+
+        await message.answer(
+            "❌ Чтобы отправлять сообщения, необходимо подписаться на рассылку.",
+            reply_markup=subscribe_keyboard.as_markup(resize_keyboard=True)
+        )
+        return
+
+    # Сохраняем сообщение как комментарий
+    try:
+        await db.add_comment(
+            user.id,
+            user.username or "No username",
+            user.first_name or "No name",
+            message.text
+        )
+
+        await message.answer(
+            "✅ Ваш комментарий сохранен!\n\n"
+            "Спасибо за ваше мнение! Мы обязательно его учтем. 💫"
+        )
+        logger.info(f"💬 Сохранен комментарий от пользователя {user.id}")
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения комментария: {e}")
+        await message.answer("❌ Произошла ошибка при сохранении комментария.")
 
 
 async def main():
@@ -218,14 +398,13 @@ async def main():
 
 if __name__ == "__main__":
     print("=" * 50)
-    print("🤖 IT Courses Bot - Локальная версия")
+    print("🤖 IT Courses Bot - Обновленная версия")
     print("=" * 50)
-    print("Команды:")
-    print("/start - подписаться на рассылку")
-    print("/help - справка по боту")
-    print("/stats - статистика бота")
-    print("=" * 50)
-    print("💡 Для ручной рассылки запустите: python manual_mailing.py")
+    print("📋 Возможности:")
+    print("• Кнопка подписки для новых пользователей")
+    print("• Автоматическая рассылка курсов")
+    print("• Комментарии от подписчиков")
+    print("• Панель администратора")
     print("=" * 50)
 
     asyncio.run(main())

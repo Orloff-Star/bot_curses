@@ -3,11 +3,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Обновленная схема сообщений с поддержкой медиа
+# Схема приветственных сообщений для новых подписчиков
 WELCOME_MESSAGES = [
     {
         "delay_minutes": 0,
-        "text": "👋 Добро пожаловать в IT Courses Bot!\n\nЯ буду присылать вам лучшие курсы по программированию и ИИ. Оставайтесь на связи! 🚀",
+        "text": "👋 Добро пожаловать в IT Courses Bot!\n\nТеперь вы будете получать лучшие курсы по программированию и ИИ. Оставайтесь на связи! 🚀",
         "media_type": None,
         "media_url": None,
     },
@@ -39,18 +39,21 @@ WELCOME_MESSAGES = [
 
 
 async def create_tables():
-    """Создание таблиц базы данных"""
+    """Создание таблиц базы данных с автоматической миграцией"""
     async with aiosqlite.connect('bot_database.db') as db:
+        # Таблица подписчиков
         await db.execute('''
             CREATE TABLE IF NOT EXISTS subscribers (
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
                 first_name TEXT,
                 subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                welcome_stage INTEGER DEFAULT 0
+                welcome_stage INTEGER DEFAULT 0,
+                is_active BOOLEAN DEFAULT TRUE
             )
         ''')
 
+        # Таблица запланированных сообщений
         await db.execute('''
             CREATE TABLE IF NOT EXISTS scheduled_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,6 +65,29 @@ async def create_tables():
             )
         ''')
 
+        # Таблица комментариев
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                username TEXT,
+                first_name TEXT,
+                message_text TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # ✅ МИГРАЦИЯ: Добавляем столбец is_active если его нет
+        try:
+            await db.execute("ALTER TABLE subscribers ADD COLUMN is_active BOOLEAN DEFAULT TRUE")
+            logger.info("Миграция: добавлен столбец is_active")
+        except aiosqlite.OperationalError as e:
+            if "duplicate column name" in str(e):
+                # Столбец уже существует - это нормально
+                logger.debug("Столбец is_active уже существует")
+            else:
+                logger.warning(f"Ошибка при миграции is_active: {e}")
+
         await db.commit()
     logger.info("Таблицы базы данных созданы/проверены")
 
@@ -71,8 +97,8 @@ async def add_subscriber(user_id: int, username: str, first_name: str):
     async with aiosqlite.connect('bot_database.db') as db:
         await db.execute(
             """INSERT OR REPLACE INTO subscribers 
-               (user_id, username, first_name, welcome_stage) 
-               VALUES (?, ?, ?, 0)""",
+               (user_id, username, first_name, welcome_stage, is_active) 
+               VALUES (?, ?, ?, 0, TRUE)""",
             (user_id, username, first_name)
         )
         await db.commit()
@@ -126,11 +152,60 @@ async def update_welcome_stage(user_id: int, new_stage: int):
 
 
 async def get_all_subscribers():
-    """Получение всех подписчиков"""
+    """Получение всех активных подписчиков"""
     async with aiosqlite.connect('bot_database.db') as db:
-        cursor = await db.execute("SELECT user_id FROM subscribers")
+        cursor = await db.execute("SELECT user_id FROM subscribers WHERE is_active = TRUE")
         rows = await cursor.fetchall()
         return [row[0] for row in rows]
+
+
+async def get_all_users():
+    """Получение всех пользователей (включая неактивных)"""
+    async with aiosqlite.connect('bot_database.db') as db:
+        cursor = await db.execute("SELECT user_id, username, first_name, subscribed_at, is_active FROM subscribers")
+        rows = await cursor.fetchall()
+        return rows
+
+
+async def is_user_subscribed(user_id: int):
+    """Проверка, подписан ли пользователь"""
+    async with aiosqlite.connect('bot_database.db') as db:
+        try:
+            cursor = await db.execute("SELECT user_id FROM subscribers WHERE user_id = ? AND is_active = TRUE",
+                                      (user_id,))
+            row = await cursor.fetchone()
+            return row is not None
+        except aiosqlite.OperationalError as e:
+            if "no such column: is_active" in str(e):
+                # Если столбца еще нет, используем старую логику
+                logger.warning("Столбец is_active не найден, используем старую логику")
+                cursor = await db.execute("SELECT user_id FROM subscribers WHERE user_id = ?", (user_id,))
+                row = await cursor.fetchone()
+                return row is not None
+            else:
+                raise
+
+
+async def add_comment(user_id: int, username: str, first_name: str, message_text: str):
+    """Добавление комментария от пользователя"""
+    async with aiosqlite.connect('bot_database.db') as db:
+        await db.execute(
+            """INSERT INTO comments 
+               (user_id, username, first_name, message_text) 
+               VALUES (?, ?, ?, ?)""",
+            (user_id, username, first_name, message_text)
+        )
+        await db.commit()
+    logger.info(f"Добавлен комментарий от пользователя: {user_id}")
+
+
+async def get_all_comments():
+    """Получение всех комментариев"""
+    async with aiosqlite.connect('bot_database.db') as db:
+        cursor = await db.execute(
+            "SELECT id, user_id, username, first_name, message_text, created_at FROM comments ORDER BY created_at DESC")
+        rows = await cursor.fetchall()
+        return rows
 
 
 async def cleanup_old_messages():
